@@ -1,0 +1,601 @@
+// EduTrack AI — Prisma Schema
+// Stack: NestJS · PostgreSQL · Prisma
+// Dragks Technologies
+// All architecture decisions locked — see FSD v1.1 and Backend Spec v1.0
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─────────────────────────────────────────────
+// ENUMS
+// ─────────────────────────────────────────────
+
+enum Role {
+  SUPER_ADMIN
+  ADMIN
+  RECORD_ADMIN // Future — UI not built yet. Enum defined now to avoid migration later.
+  TEACHER
+  STUDENT
+  // PARENT — permanently removed. Will never exist in EduTrack.
+}
+
+enum SchoolType {
+  PRIMARY // Only value used. Always set automatically. No selector in UI.
+}
+
+enum Gender {
+  MALE
+  FEMALE
+}
+
+enum TermName {
+  FIRST
+  SECOND
+  THIRD
+}
+
+enum StudentStatus {
+  ACTIVE      // Enrolled, participates normally
+  WITHDRAWN   // Left school. Records preserved. Hidden from class lists.
+  GRADUATED   // Completed final class. Records preserved. Hidden from class lists.
+  DEACTIVATED // Hidden from admin/teacher portal. Login still works.
+}
+
+enum ResultStatus {
+  DRAFT     // Teacher entering scores — invisible to admin
+  SUBMITTED // Teacher submitted — locked — admin can see
+  PUBLISHED // Admin published — students can view
+  // APPROVED / REJECTED preserved for future rejection workflow
+}
+
+enum PromotionAction {
+  PROMOTE
+  REPEAT
+  GRADUATE
+  WITHDRAW
+}
+
+enum FileType {
+  TEACHER_IMPORT
+  STUDENT_IMPORT
+  LOGO   // Future
+  PHOTO  // Future
+  REPORT // Future
+}
+
+enum ImportStatus {
+  PROCESSING
+  COMPLETED
+  PARTIALLY_COMPLETED
+  FAILED
+}
+
+enum AuditAction {
+  CREATE
+  UPDATE
+  DELETE
+  LOGIN
+  LOGOUT
+  SUBMIT
+  PUBLISH
+  PROMOTE
+  ARCHIVE
+  ACTIVATE
+  DEACTIVATE
+  PASSWORD_CHANGE
+  IMPORT
+}
+
+// ─────────────────────────────────────────────
+// SCHOOLS
+// ─────────────────────────────────────────────
+
+model School {
+  id         String     @id @default(uuid())
+  name       String
+  type       SchoolType @default(PRIMARY) // Always PRIMARY — auto-set on registration
+  address    String
+  email      String     @unique // Globally unique across platform
+  phone      String?
+  isActive   Boolean    @default(true)
+  archivedAt DateTime?
+  createdAt  DateTime   @default(now())
+  updatedAt  DateTime   @updatedAt
+
+  users         User[]
+  sessions      AcademicSession[]
+  classes       Class[]
+  students      Student[]
+  teachers      Teacher[]
+  subjects      Subject[]
+  gradingScales GradingScale[]
+  files         File[]
+  auditLogs     AuditLog[]
+  settings      SchoolSettings?
+
+  @@map("schools")
+}
+
+model SchoolSettings {
+  id       String @id @default(uuid())
+  schoolId String @unique
+  school   School @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+
+  // Score maximums — validated on every result entry
+  ca1Max Int @default(10)
+  ca2Max Int @default(10)
+  ca3Max Int @default(10)
+  ca4Max Int @default(10)
+  examMax Int @default(60)
+
+  // ID generation prefixes — first 3 letters of school name by default
+  staffIdPrefix   String @default("SCH") // BFA → BFA/TCH/001
+  studentIdPrefix String @default("SCH") // BFA → BFA/STU/001
+
+  // Future feature flags — kept in schema, dormant now
+  notifyViaEmail   Boolean @default(false)
+  notifyViaSMS     Boolean @default(false)
+  attendanceAlerts Boolean @default(false)
+
+  updatedAt DateTime @updatedAt
+
+  history SchoolSettingsHistory[]
+
+  @@map("school_settings")
+}
+
+model SchoolSettingsHistory {
+  id         String         @id @default(uuid())
+  settingsId String
+  settings   SchoolSettings @relation(fields: [settingsId], references: [id], onDelete: Cascade)
+  changedBy  String // User ID
+  before     Json
+  after      Json
+  changedAt  DateTime @default(now())
+
+  @@map("school_settings_history")
+}
+
+// ─────────────────────────────────────────────
+// USERS — Auth layer for all roles
+// ─────────────────────────────────────────────
+
+model User {
+  id                  String    @id @default(uuid())
+  schoolId            String? // null for SUPER_ADMIN only
+  school              School?   @relation(fields: [schoolId], references: [id], onDelete: SetNull)
+  fullName            String
+  email               String    @unique
+  phone               String?
+  password            String
+  role                Role
+  isActive            Boolean   @default(true)
+  archivedAt          DateTime?
+  mustChangePassword  Boolean   @default(false) // true for TEACHER + STUDENT on creation
+  lastLoginAt         DateTime?
+  refreshToken        String?
+  passwordResetToken  String?
+  passwordResetExpiry DateTime?
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
+
+  teacher   Teacher?
+  student   Student?
+  auditLogs AuditLog[]
+  files     File[]
+
+  @@map("users")
+}
+
+// ─────────────────────────────────────────────
+// ACADEMIC SESSIONS & TERMS
+// ─────────────────────────────────────────────
+
+model AcademicSession {
+  id        String    @id @default(uuid())
+  schoolId  String
+  school    School    @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+  name      String // e.g. "2025/2026"
+  isActive  Boolean   @default(false)
+  startDate DateTime?
+  endDate   DateTime?
+  createdAt DateTime  @default(now())
+
+  terms      Term[]
+  promotions StudentPromotion[]
+
+  @@unique([schoolId, name])
+  @@map("academic_sessions")
+}
+
+model Term {
+  id        String   @id @default(uuid())
+  sessionId String
+  session   AcademicSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  name      TermName
+  isOpen    Boolean  @default(false) // Gate: true = teachers can enter/submit results
+  startDate DateTime?
+  endDate   DateTime?
+  createdAt DateTime @default(now())
+
+  resultSubmissions ResultSubmission[]
+
+  @@unique([sessionId, name])
+  @@map("terms")
+}
+
+// ─────────────────────────────────────────────
+// CLASSES
+// ─────────────────────────────────────────────
+
+model Class {
+  id             String    @id @default(uuid())
+  schoolId       String
+  school         School    @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+  name           String
+  level          String // e.g. "PRIMARY 4"
+  armSection     String? // e.g. "Gold", "Silver"
+  classTeacherId String?
+  classTeacher   Teacher?  @relation("ClassTeacher", fields: [classTeacherId], references: [id], onDelete: SetNull)
+  isActive       Boolean   @default(true)
+  archivedAt     DateTime?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  students            Student[]
+  promotionsFrom      StudentPromotion[]    @relation("FromClass")
+  promotionsTo        StudentPromotion[]    @relation("ToClass")
+  classTeacherHistory ClassTeacherHistory[]
+  resultSubmissions   ResultSubmission[]
+
+  @@unique([schoolId, name])
+  @@map("classes")
+}
+
+model ClassTeacherHistory {
+  id        String    @id @default(uuid())
+  classId   String
+  class     Class     @relation(fields: [classId], references: [id], onDelete: Cascade)
+  teacherId String?
+  sessionId String?
+  startDate DateTime  @default(now())
+  endDate   DateTime?
+  changedBy String // Admin user ID
+
+  @@map("class_teacher_history")
+}
+
+// ─────────────────────────────────────────────
+// SUBJECTS — School-wide. No per-class assignment.
+// All active subjects are available to all classes automatically.
+// ─────────────────────────────────────────────
+
+model Subject {
+  id           String    @id @default(uuid())
+  schoolId     String
+  school       School    @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+  name         String
+  code         String? // e.g. "MTH", "ENG" — optional short code
+  displayOrder Int // Auto-assigned = creation order. Cannot be reordered in this version.
+  isActive     Boolean   @default(true)
+  archivedAt   DateTime?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  scores Score[]
+
+  @@unique([schoolId, name])
+  @@map("subjects")
+}
+
+// ─────────────────────────────────────────────
+// TEACHERS
+// ─────────────────────────────────────────────
+
+model Teacher {
+  id             String    @id @default(uuid())
+  userId         String    @unique
+  user           User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  schoolId       String
+  school         School    @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+  staffId        String    @unique // e.g. BFA/TCH/001 — LOGIN CREDENTIAL — auto-generated — read-only
+  qualification  String?
+  specialization String?
+  joinDate       DateTime?
+  isActive       Boolean   @default(true)
+  archivedAt     DateTime?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  classesAsTeacher  Class[]                    @relation("ClassTeacher")
+  resultSubmissions ResultSubmission[]
+  assignmentHistory TeacherAssignmentHistory[]
+
+  @@map("teachers")
+}
+
+model TeacherAssignmentHistory {
+  id        String    @id @default(uuid())
+  teacherId String
+  teacher   Teacher   @relation(fields: [teacherId], references: [id], onDelete: Cascade)
+  classId   String?
+  sessionId String?
+  termId    String?
+  startDate DateTime  @default(now())
+  endDate   DateTime?
+  changedBy String // Admin user ID
+
+  @@map("teacher_assignment_history")
+}
+
+// ─────────────────────────────────────────────
+// STUDENTS
+// ─────────────────────────────────────────────
+
+model Student {
+  id              String        @id @default(uuid())
+  userId          String?       @unique // Auto-created on student creation
+  user            User?         @relation(fields: [userId], references: [id], onDelete: SetNull)
+  schoolId        String
+  school          School        @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+  classId         String?
+  class           Class?        @relation(fields: [classId], references: [id], onDelete: SetNull)
+  studentId       String        @unique // e.g. BFA/STU/001 — LOGIN CREDENTIAL — auto-generated
+  admissionNumber String // Provided by admin manually — school record — NOT used for login
+  fullName        String
+  gender          Gender
+  dateOfBirth     DateTime?
+  photoUrl        String? // Future feature — field kept nullable
+  status          StudentStatus @default(ACTIVE)
+  archivedAt      DateTime?
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+
+  scores       Score[]
+  promotions   StudentPromotion[]
+  classHistory StudentClassHistory[]
+
+  @@unique([schoolId, admissionNumber]) // Admission number unique within school
+  @@map("students")
+}
+
+model StudentClassHistory {
+  id        String    @id @default(uuid())
+  studentId String
+  student   Student   @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  classId   String?
+  sessionId String?
+  termId    String?
+  startDate DateTime  @default(now())
+  endDate   DateTime?
+  reason    String? // "Admission", "Promotion", "Repeat", "Transfer", "Withdrawal", "Graduation"
+
+  @@map("student_class_history")
+}
+
+// ─────────────────────────────────────────────
+// GRADING
+// ─────────────────────────────────────────────
+
+model GradingScale {
+  id        String   @id @default(uuid())
+  schoolId  String
+  school    School   @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+  grade     String // e.g. "A1", "B2", "F9"
+  minScore  Int
+  maxScore  Int
+  remark    String // e.g. "Excellent", "Very Good", "Fail"
+  order     Int // Display order (1 = highest)
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("grading_scales")
+}
+
+model GradingScaleHistory {
+  id        String   @id @default(uuid())
+  schoolId  String
+  changedBy String // Admin user ID
+  before    Json
+  after     Json
+  changedAt DateTime @default(now())
+
+  @@map("grading_scale_history")
+}
+
+// ─────────────────────────────────────────────
+// RESULTS
+// ─────────────────────────────────────────────
+
+model ResultSubmission {
+  id          String       @id @default(uuid())
+  teacherId   String
+  teacher     Teacher      @relation(fields: [teacherId], references: [id], onDelete: Cascade)
+  classId     String
+  class       Class        @relation(fields: [classId], references: [id], onDelete: Cascade)
+  termId      String
+  term        Term         @relation(fields: [termId], references: [id], onDelete: Cascade)
+  status      ResultStatus @default(DRAFT)
+  submittedAt DateTime?
+  publishedAt DateTime?
+  publishedBy String? // Admin user ID
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+
+  scores    Score[]
+  positions ResultPosition[]
+  approvals ApprovalLog[] // Dormant — for future rejection workflow
+
+  @@unique([classId, termId]) // One submission per class per term
+  @@map("result_submissions")
+}
+
+model Score {
+  id           String           @id @default(uuid())
+  submissionId String
+  submission   ResultSubmission @relation(fields: [submissionId], references: [id], onDelete: Cascade)
+  studentId    String
+  student      Student          @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  subjectId    String
+  subject      Subject          @relation(fields: [subjectId], references: [id], onDelete: Cascade)
+
+  // Whole integers only — no decimals ever
+  ca1  Int?
+  ca2  Int?
+  ca3  Int?
+  ca4  Int?
+  exam Int?
+
+  // Auto-calculated by backend on every save
+  total  Int?
+  grade  String?
+  remark String?
+
+  // Future feature — kept nullable, not used in this version
+  teacherComment String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([submissionId, studentId, subjectId])
+  @@map("scores")
+}
+
+model ResultPosition {
+  id           String           @id @default(uuid())
+  submissionId String
+  submission   ResultSubmission @relation(fields: [submissionId], references: [id], onDelete: Cascade)
+  studentId    String
+  position     Int
+  totalScore   Int
+  average      Float
+  calculatedAt DateTime         @default(now())
+
+  @@unique([submissionId, studentId])
+  @@map("result_positions")
+}
+
+// Kept for future rejection workflow — not used in this version
+model ApprovalLog {
+  id           String           @id @default(uuid())
+  submissionId String
+  submission   ResultSubmission @relation(fields: [submissionId], references: [id], onDelete: Cascade)
+  adminId      String // User ID
+  action       String // "PUBLISHED" now; "APPROVED" / "REJECTED" in future
+  comment      String? // Future — when rejection workflow returns
+  createdAt    DateTime         @default(now())
+
+  @@map("approval_logs")
+}
+
+// ─────────────────────────────────────────────
+// PROMOTIONS
+// ─────────────────────────────────────────────
+
+model StudentPromotion {
+  id          String          @id @default(uuid())
+  studentId   String
+  student     Student         @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  sessionId   String
+  session     AcademicSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  fromClassId String?
+  fromClass   Class?          @relation("FromClass", fields: [fromClassId], references: [id], onDelete: SetNull)
+  toClassId   String?
+  toClass     Class?          @relation("ToClass", fields: [toClassId], references: [id], onDelete: SetNull)
+  action      PromotionAction
+  adminId     String // User ID who performed action
+  note        String?
+  createdAt   DateTime        @default(now())
+
+  @@map("student_promotions")
+}
+
+// ─────────────────────────────────────────────
+// NOTIFICATIONS — Dormant. Preserved for future version.
+// ─────────────────────────────────────────────
+
+model Notification {
+  id          String    @id @default(uuid())
+  schoolId    String
+  senderId    String
+  title       String
+  body        String
+  category    String?
+  audience    String?
+  priority    String?
+  status      String    @default("DRAFT")
+  scheduledAt DateTime?
+  sentAt      DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  receipts NotifReceipt[]
+
+  @@map("notifications")
+}
+
+model NotifReceipt {
+  id             String       @id @default(uuid())
+  notificationId String
+  notification   Notification @relation(fields: [notificationId], references: [id], onDelete: Cascade)
+  recipientId    String
+  isRead         Boolean      @default(false)
+  readAt         DateTime?
+  createdAt      DateTime     @default(now())
+
+  @@map("notif_receipts")
+}
+
+// ─────────────────────────────────────────────
+// FILES — Generic. CSV imports now. Logos/photos/reports later.
+// ─────────────────────────────────────────────
+
+model File {
+  id          String       @id @default(uuid())
+  schoolId    String
+  school      School       @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+  uploadedBy  String
+  uploader    User         @relation(fields: [uploadedBy], references: [id], onDelete: Cascade)
+  fileName    String
+  fileType    FileType
+  mimeType    String?
+  path        String?
+  sizeBytes   Int?
+  status      ImportStatus @default(PROCESSING)
+  totalRows   Int?
+  successRows Int?
+  failedRows  Int?
+  errorPath   String? // Path to downloadable error CSV
+  createdAt   DateTime     @default(now())
+
+  @@map("files")
+}
+
+// ─────────────────────────────────────────────
+// AUDIT LOGS — Immutable. Append-only. Written on every important action.
+// ─────────────────────────────────────────────
+
+model AuditLog {
+  id        String      @id @default(uuid())
+  schoolId  String?
+  school    School?     @relation(fields: [schoolId], references: [id], onDelete: SetNull)
+  userId    String?
+  user      User?       @relation(fields: [userId], references: [id], onDelete: SetNull)
+  action    AuditAction
+  entity    String // e.g. "Student", "Teacher", "Result"
+  entityId  String?
+  before    Json?
+  after     Json?
+  ipAddress String?
+  userAgent String?
+  createdAt DateTime    @default(now())
+
+  @@map("audit_logs")
+}
