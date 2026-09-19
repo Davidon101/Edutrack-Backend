@@ -4,6 +4,10 @@ node_modules/
 # Build output
 dist/
 
+# Lock files
+package-lock.json
+
+
 # Environment — NEVER commit .env
 .env
 .env.local
@@ -27,3 +31,6 @@ Thumbs.db
 # Prisma
 prisma/*.db
 prisma/*.db-journal
+
+# Vercel
+.vercel
