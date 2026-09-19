@@ -36,7 +36,7 @@ export class SchoolsService {
       data: {
         schoolId, userId, action: 'UPDATE', entity: 'School', entityId: schoolId,
         before: { name: before.name, address: before.address, phone: before.phone },
-        after: dto,
+        after: { ...dto } as any,
       },
     });
 

@@ -23,14 +23,11 @@ export class StudentsService {
         status: { not: 'DEACTIVATED' }, // DEACTIVATED hidden from portal lists
       },
       orderBy: { fullName: 'asc' },
-      include: {
-        class: { select: { id: true, name: true } },
-      },
       select: {
         id: true, studentId: true, admissionNumber: true,
         fullName: true, gender: true, dateOfBirth: true,
         status: true, createdAt: true,
-        class: true,
+        class: { select: { id: true, name: true } },
       },
     });
     return { data: students, message: 'Students retrieved' };
