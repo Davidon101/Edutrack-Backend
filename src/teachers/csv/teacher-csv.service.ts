@@ -4,6 +4,7 @@ import { TeachersService } from '../teachers.service';
 import { v4 as uuid } from 'uuid';
 import * as fs from 'fs';
 import * as path from 'path';
+import * as os from 'os';
 
 export interface TeacherCsvRow {
   rowNumber: number;
@@ -32,7 +33,7 @@ export class TeacherCsvService {
 
   // ── Download CSV template ──────────────────────────────────────────
   public getTemplatePath(): string {
-    const dir = path.join(process.cwd(), 'templates');
+    const dir = path.join(os.tmpdir(), 'templates');
     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
     const filePath = path.join(dir, 'teacher-template.csv');
     if (!fs.existsSync(filePath)) {
