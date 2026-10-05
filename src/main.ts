@@ -72,6 +72,16 @@ async function bootstrap() {
   const document = SwaggerModule.createDocument(app, swaggerConfig);
   SwaggerModule.setup('api/docs', app, document, {
     swaggerOptions: { persistAuthorization: true },
+    // Vercel's build only bundles statically-imported files, so the
+    // swagger-ui-dist assets (css/js/favicon) served via sendFile() at
+    // runtime get dropped from the deployed function. Load them from a
+    // CDN instead so they resolve correctly in production.
+    customCssUrl:
+      'https://cdnjs.cloudflare.com/ajax/libs/swagger-ui/5.17.14/swagger-ui.min.css',
+    customJs: [
+      'https://cdnjs.cloudflare.com/ajax/libs/swagger-ui/5.17.14/swagger-ui-bundle.min.js',
+      'https://cdnjs.cloudflare.com/ajax/libs/swagger-ui/5.17.14/swagger-ui-standalone-preset.min.js',
+    ],
   });
 
   await app.listen(port);
