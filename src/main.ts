@@ -17,7 +17,23 @@ async function bootstrap() {
   const port = config.get<number>('port', 3000);
 
   // ── Security ───────────────────────────────────────────────────────
-  app.use(helmet());
+  // Helmet's default CSP only allows 'self', which silently blocks the
+  // cdnjs-hosted Swagger UI assets loaded by the /api/docs page below
+  // (script/style requests get blocked, SwaggerUIBundle never loads,
+  // resulting in a blank page with no visible server-side error).
+  app.use(
+    helmet({
+      contentSecurityPolicy: {
+        directives: {
+          ...helmet.contentSecurityPolicy.getDefaultDirectives(),
+          'script-src': ["'self'", "'unsafe-inline'", 'cdnjs.cloudflare.com'],
+          'style-src': ["'self'", "'unsafe-inline'", 'cdnjs.cloudflare.com'],
+          'img-src': ["'self'", 'data:', 'cdnjs.cloudflare.com'],
+          'connect-src': ["'self'"],
+        },
+      },
+    }),
+  );
   app.use(compression());
 
   // ── CORS ───────────────────────────────────────────────────────────
@@ -72,18 +88,49 @@ async function bootstrap() {
     .build();
 
   const document = SwaggerModule.createDocument(app, swaggerConfig);
+
+  // Vercel's build only bundles statically-imported files, so the
+  // swagger-ui-dist assets (css/js/favicon) that @nestjs/swagger's built-in
+  // UI serves via sendFile() at runtime get dropped from the deployed
+  // function — every request for them 404s. customCssUrl/customJs don't fix
+  // this: they only *add* extra tags, they don't replace the hardcoded local
+  // ones. So: disable the built-in UI (this still exposes the raw JSON spec
+  // at /api/docs-json) and serve a small hand-written HTML page instead that
+  // loads Swagger UI entirely from CDN — nothing local for Vercel to drop.
   SwaggerModule.setup('api/docs', app, document, {
-    swaggerOptions: { persistAuthorization: true },
-    // Vercel's build only bundles statically-imported files, so the
-    // swagger-ui-dist assets (css/js/favicon) served via sendFile() at
-    // runtime get dropped from the deployed function. Load them from a
-    // CDN instead so they resolve correctly in production.
-    customCssUrl:
-      'https://cdnjs.cloudflare.com/ajax/libs/swagger-ui/5.17.14/swagger-ui.min.css',
-    customJs: [
-      'https://cdnjs.cloudflare.com/ajax/libs/swagger-ui/5.17.14/swagger-ui-bundle.min.js',
-      'https://cdnjs.cloudflare.com/ajax/libs/swagger-ui/5.17.14/swagger-ui-standalone-preset.min.js',
-    ],
+    swaggerUiEnabled: false,
+    jsonDocumentUrl: 'api/docs-json',
+  });
+
+  const swaggerCdnVersion = '5.17.14';
+  const swaggerHtml = `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>EduTrack AI API Docs</title>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/swagger-ui/${swaggerCdnVersion}/swagger-ui.min.css" />
+  <style>body { margin: 0; }</style>
+</head>
+<body>
+  <div id="swagger-ui"></div>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/swagger-ui/${swaggerCdnVersion}/swagger-ui-bundle.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/swagger-ui/${swaggerCdnVersion}/swagger-ui-standalone-preset.min.js"></script>
+  <script>
+    window.onload = () => {
+      window.ui = SwaggerUIBundle({
+        url: '/api/docs-json',
+        dom_id: '#swagger-ui',
+        presets: [SwaggerUIBundle.presets.apis, SwaggerUIStandalonePreset],
+        layout: 'StandaloneLayout',
+        persistAuthorization: true,
+      });
+    };
+  </script>
+</body>
+</html>`;
+
+  app.getHttpAdapter().get('/api/docs', (_req, res) => {
+    res.type('html').send(swaggerHtml);
   });
 
   await app.listen(port);
