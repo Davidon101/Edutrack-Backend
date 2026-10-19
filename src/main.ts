@@ -1,3 +1,12 @@
+/**
+ * @fileoverview Main entry point of the EduTrack API server.
+ * Bootstraps NestJS, configures Helmet CSP (allowing cdnjs for Swagger UI), CORS,
+ * URI versioning, global pipes, global filters, global JWT/Roles guards, and custom CDN Swagger UI.
+ * @module Bootstrap
+ * @author Edutrack Engineering Team
+ * @created 1.0.0
+ */
+
 import { NestFactory, Reflector } from '@nestjs/core';
 import { RequestMethod, ValidationPipe, VersioningType } from '@nestjs/common';
 import { SwaggerModule, DocumentBuilder } from '@nestjs/swagger';
@@ -10,6 +19,12 @@ import { ResponseInterceptor } from './common/interceptors/response.interceptor'
 import { JwtAuthGuard } from './common/guards/jwt-auth.guard';
 import { RolesGuard } from './common/guards/roles.guard';
 
+/**
+ * Bootstraps the application, registers middleware, and starts HTTP listener.
+ *
+ * @async
+ * @function bootstrap
+ */
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
   const config = app.get(ConfigService);

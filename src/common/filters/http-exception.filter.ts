@@ -1,3 +1,9 @@
+/**
+ * @fileoverview Global exception filter for handling HTTP and unhandled exceptions.
+ * Normalizes all error responses into a consistent JSON error schema.
+ * @module common/filters/http-exception
+ */
+
 import {
   ExceptionFilter,
   Catch,
@@ -8,10 +14,29 @@ import {
 } from '@nestjs/common';
 import { Request, Response } from 'express';
 
+/**
+ * Filter that captures exceptions across the application lifecycle and structures
+ * them into uniform JSON responses.
+ *
+ * Maps HTTP status codes to machine-readable string error codes and extracts validation
+ * errors emitted by `ValidationPipe`.
+ */
 @Catch()
 export class HttpExceptionFilter implements ExceptionFilter {
   private readonly logger = new Logger(HttpExceptionFilter.name);
 
+  /**
+   * Processes the caught exception and formats the HTTP response.
+   *
+   * @param exception - The caught exception (HttpException or unknown error).
+   * @param host - Arguments host providing access to HTTP execution context.
+   *
+   * @example
+   * ```ts
+   * // Global registration in main.ts:
+   * app.useGlobalFilters(new HttpExceptionFilter());
+   * ```
+   */
   catch(exception: unknown, host: ArgumentsHost) {
     const ctx = host.switchToHttp();
     const response = ctx.getResponse<Response>();

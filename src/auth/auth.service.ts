@@ -1,9 +1,14 @@
+/**
+ * @fileoverview Authentication service handling school onboarding, multi-role user authentication,
+ * JWT token generation/refreshing, session termination, and password recovery.
+ * @module auth/auth.service
+ */
+
 import {
   Injectable,
   UnauthorizedException,
   ConflictException,
   BadRequestException,
-  NotFoundException,
 } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
@@ -22,34 +27,69 @@ import {
 import {
   hashPassword,
   comparePassword,
-  generateTemporaryPassword,
 } from '../common/utils/password.util';
 import { derivePrefix } from '../common/utils/id.util';
 import { DEFAULT_NIGERIAN_GRADING } from '../common/utils/grade.util';
 
+/**
+ * Service managing core authentication flows including multi-tenant registration,
+ * role-specific logins (Admin, Teacher, Student), JWT management, and password recovery.
+ */
 @Injectable()
 export class AuthService {
+  /**
+   * Initializes the AuthService.
+   *
+   * @param prisma - Prisma database service.
+   * @param jwt - NestJS JWT service for token signing and verification.
+   * @param config - ConfigService for retrieving security parameters.
+   */
   constructor(
     private prisma: PrismaService,
     private jwt: JwtService,
     private config: ConfigService,
   ) {}
 
-  // ── Register new school + admin ──────────────────────────────────
+  /**
+   * Registers a new school and provisions its primary administrator account.
+   *
+   * Executes in a single database transaction to create the school, admin user,
+   * default settings, Nigerian WAEC grading scale, academic session, default terms, and audit log.
+   *
+   * @param dto - School registration details and administrator credentials.
+   * @returns Object containing JWT tokens, sanitized admin user, and school data.
+   * @throws {ConflictException} If administrator email or school email is already registered.
+   *
+   * @example
+   * ```ts
+   * const result = await authService.registerSchool({
+   *   schoolName: 'Bright Future Academy',
+   *   schoolEmail: 'info@bfa.ng',
+   *   address: 'Abuja, Nigeria',
+   *   adminName: 'Amaka Obi',
+   *   adminEmail: 'amaka@bfa.ng',
+   *   password: 'Password123!',
+   * });
+   * ```
+   */
   async registerSchool(dto: RegisterSchoolDto) {
     // Check uniqueness
     const emailTaken = await this.prisma.user.findUnique({
       where: { email: dto.adminEmail },
     });
     if (emailTaken) {
-      throw new ConflictException('An account with this admin email already exists');
+      throw new ConflictException(
+        'An account with this admin email already exists',
+      );
     }
 
     const schoolEmailTaken = await this.prisma.school.findUnique({
       where: { email: dto.schoolEmail },
     });
     if (schoolEmailTaken) {
-      throw new ConflictException('A school with this email is already registered');
+      throw new ConflictException(
+        'A school with this email is already registered',
+      );
     }
 
     const hashedPassword = await hashPassword(dto.password);
@@ -112,9 +152,9 @@ export class AuthService {
       // 6. Three terms — FIRST open by default
       await tx.term.createMany({
         data: [
-          { sessionId: session.id, name: 'FIRST',  isOpen: true  },
+          { sessionId: session.id, name: 'FIRST', isOpen: true },
           { sessionId: session.id, name: 'SECOND', isOpen: false },
-          { sessionId: session.id, name: 'THIRD',  isOpen: false },
+          { sessionId: session.id, name: 'THIRD', isOpen: false },
         ],
       });
 
@@ -150,7 +190,21 @@ export class AuthService {
     };
   }
 
-  // ── Admin / Super Admin login (email + password) ──────────────────
+  /**
+   * Authenticates an administrator (SUPER_ADMIN, ADMIN, or RECORD_ADMIN) using email and password.
+   *
+   * @param dto - Login credentials containing email and password.
+   * @returns JWT access/refresh tokens, sanitized user profile, and school entity.
+   * @throws {UnauthorizedException} If credentials are invalid, account is inactive, or role mismatch occurs.
+   *
+   * @example
+   * ```ts
+   * const authResponse = await authService.login({
+   *   email: 'admin@school.com',
+   *   password: 'Password123',
+   * });
+   * ```
+   */
   async login(dto: LoginDto) {
     const user = await this.prisma.user.findUnique({
       where: { email: dto.email },
@@ -209,7 +263,21 @@ export class AuthService {
     };
   }
 
-  // ── Teacher login (Staff ID + password) ───────────────────────────
+  /**
+   * Authenticates a teacher using their auto-generated Staff ID and password.
+   *
+   * @param dto - Teacher login credentials containing staffId and password.
+   * @returns JWT tokens, sanitized profile with staff details and assigned class, and school object.
+   * @throws {UnauthorizedException} If Staff ID is invalid, password does not match, or user account is disabled.
+   *
+   * @example
+   * ```ts
+   * const res = await authService.teacherLogin({
+   *   staffId: 'BFA/TCH/001',
+   *   password: 'TempPassword123',
+   * });
+   * ```
+   */
   async teacherLogin(dto: TeacherLoginDto) {
     // Look up by staffId
     const teacher = await this.prisma.teacher.findUnique({
@@ -230,7 +298,9 @@ export class AuthService {
     }
 
     if (!teacher.user.isActive) {
-      throw new UnauthorizedException('Your account has been deactivated. Contact your admin.');
+      throw new UnauthorizedException(
+        'Your account has been deactivated. Contact your admin.',
+      );
     }
 
     await this.prisma.user.update({
@@ -270,7 +340,23 @@ export class AuthService {
     };
   }
 
-  // ── Student login (Student ID + password) ──────────────────────────
+  /**
+   * Authenticates a student using their auto-generated Student ID and password.
+   *
+   * Allows even inactive or graduated students to view historical academic records.
+   *
+   * @param dto - Student login credentials containing studentId and password.
+   * @returns JWT tokens, sanitized user profile with student identity and current class.
+   * @throws {UnauthorizedException} If student ID is not found, password mismatches, or user account is disabled.
+   *
+   * @example
+   * ```ts
+   * const res = await authService.studentLogin({
+   *   studentId: 'BFA/STU/042',
+   *   password: 'TempPassword456',
+   * });
+   * ```
+   */
   async studentLogin(dto: StudentLoginDto) {
     // Look up by studentId (login credential — separate from admissionNumber)
     const student = await this.prisma.student.findUnique({
@@ -294,7 +380,9 @@ export class AuthService {
     // students can log in to view their historical records
 
     if (!student.user.isActive) {
-      throw new UnauthorizedException('Your account has been deactivated. Contact your admin.');
+      throw new UnauthorizedException(
+        'Your account has been deactivated. Contact your admin.',
+      );
     }
 
     await this.prisma.user.update({
@@ -334,7 +422,18 @@ export class AuthService {
     };
   }
 
-  // ── Refresh access token ─────────────────────────────────────────
+  /**
+   * Refreshes access and refresh tokens using a valid refresh token.
+   *
+   * @param dto - Payload containing the current refreshToken string.
+   * @returns Object with newly minted accessToken and refreshToken pair.
+   * @throws {UnauthorizedException} If token signature fails, account is inactive, or token mismatch occurs.
+   *
+   * @example
+   * ```ts
+   * const tokens = await authService.refresh({ refreshToken: '...' });
+   * ```
+   */
   async refresh(dto: RefreshTokenDto) {
     try {
       const payload = this.jwt.verify(dto.refreshToken, {
@@ -343,7 +442,14 @@ export class AuthService {
 
       const user = await this.prisma.user.findUnique({
         where: { id: payload.sub },
-        select: { id: true, role: true, schoolId: true, email: true, isActive: true, refreshToken: true },
+        select: {
+          id: true,
+          role: true,
+          schoolId: true,
+          email: true,
+          isActive: true,
+          refreshToken: true,
+        },
       });
 
       if (!user || !user.isActive) {
@@ -355,13 +461,21 @@ export class AuthService {
         throw new UnauthorizedException('Session expired. Please log in again.');
       }
 
-      const matches = await comparePassword(dto.refreshToken, user.refreshToken);
+      const matches = await comparePassword(
+        dto.refreshToken,
+        user.refreshToken,
+      );
       if (!matches) {
         throw new UnauthorizedException('Invalid refresh token');
       }
 
       return {
-        data: await this.generateTokens(user.id, user.role, user.schoolId, user.email),
+        data: await this.generateTokens(
+          user.id,
+          user.role,
+          user.schoolId,
+          user.email,
+        ),
         message: 'Token refreshed',
       };
     } catch {
@@ -369,7 +483,17 @@ export class AuthService {
     }
   }
 
-  // ── Logout ────────────────────────────────────────────────────────
+  /**
+   * Terminates active session by invalidating the user's stored refresh token and writing an audit log.
+   *
+   * @param userId - UUID of the user logging out.
+   * @returns Object containing logout status message.
+   *
+   * @example
+   * ```ts
+   * await authService.logout('user-uuid');
+   * ```
+   */
   async logout(userId: string) {
     await this.prisma.user.update({
       where: { id: userId },
@@ -388,7 +512,19 @@ export class AuthService {
     return { message: 'Logged out successfully' };
   }
 
-  // ── Forgot password ───────────────────────────────────────────────
+  /**
+   * Generates a password reset token for the specified user email address.
+   *
+   * Silently returns success regardless of whether the email exists to avoid account enumeration.
+   *
+   * @param dto - Payload containing user email.
+   * @returns Generic confirmation message.
+   *
+   * @example
+   * ```ts
+   * await authService.forgotPassword({ email: 'user@school.com' });
+   * ```
+   */
   async forgotPassword(dto: ForgotPasswordDto) {
     const user = await this.prisma.user.findUnique({
       where: { email: dto.email },
@@ -416,7 +552,21 @@ export class AuthService {
     };
   }
 
-  // ── Reset password ────────────────────────────────────────────────
+  /**
+   * Resets a user account password using a validated reset token.
+   *
+   * @param dto - Token and new plaintext password payload.
+   * @returns Object containing confirmation message.
+   * @throws {BadRequestException} If the token is invalid or expired.
+   *
+   * @example
+   * ```ts
+   * await authService.resetPassword({
+   *   token: 'valid-reset-token',
+   *   newPassword: 'BrandNewPassword123!',
+   * });
+   * ```
+   */
   async resetPassword(dto: ResetPasswordDto) {
     const user = await this.prisma.user.findFirst({
       where: {
@@ -453,7 +603,15 @@ export class AuthService {
     return { message: 'Password updated successfully' };
   }
 
-  // ── Token generation ──────────────────────────────────────────────
+  /**
+   * Helper generating access and refresh JWTs and persisting hashed refresh token.
+   *
+   * @param userId - User ID subject.
+   * @param role - System role of the user.
+   * @param schoolId - School ID or null.
+   * @param email - User email.
+   * @returns Signed access and refresh tokens.
+   */
   private async generateTokens(
     userId: string,
     role: Role,
@@ -482,6 +640,12 @@ export class AuthService {
     return { accessToken, refreshToken };
   }
 
+  /**
+   * Strips sensitive security credential attributes before sending user object to clients.
+   *
+   * @param user - Raw database user record.
+   * @returns Sanitized user representation.
+   */
   private sanitizeUser(user: any) {
     const {
       password,

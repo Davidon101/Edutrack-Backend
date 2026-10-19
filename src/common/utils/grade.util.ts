@@ -1,14 +1,43 @@
+/**
+ * @fileoverview Grading calculation utilities and default grading system constants.
+ * Provides grade determination and score summation logic.
+ * @module common/utils/grade
+ */
+
 import { GradingScale } from '@prisma/client';
 
+/**
+ * Result of a successful grade evaluation.
+ */
 export interface GradeResult {
+  /**
+   * Letter grade assigned (e.g., 'A1', 'B2', 'C4').
+   */
   grade: string;
+
+  /**
+   * Remark or performance comment associated with the grade (e.g., 'Excellent', 'Credit').
+   */
   remark: string;
 }
 
 /**
- * Calculate grade and remark from a total score using the school's grading scale.
- * The scale is fetched from DB and passed in — no DB call inside this utility.
- * Returns null if no matching grade is found (shouldn't happen with a complete scale).
+ * Calculates letter grade and remark from a total score against an active grading scale.
+ *
+ * The grading scale array is evaluated in ascending `order` sequence among active items.
+ *
+ * @param total - Total student score (typically 0-100).
+ * @param gradingScales - List of school grading scales loaded from database.
+ * @returns {GradeResult | null} Matching GradeResult object, or null if no scale range covers the total.
+ *
+ * @example
+ * ```ts
+ * const scales = [
+ *   { id: '1', grade: 'A1', minScore: 75, maxScore: 100, remark: 'Excellent', order: 1, isActive: true, schoolId: 's1', createdAt: new Date() },
+ * ];
+ * const result = calculateGrade(82, scales);
+ * // result => { grade: 'A1', remark: 'Excellent' }
+ * ```
  */
 export function calculateGrade(
   total: number,
@@ -24,8 +53,22 @@ export function calculateGrade(
 }
 
 /**
- * Calculate total score from individual components
- * All values are integers — nulls treated as 0
+ * Computes cumulative total score from continuous assessments (CAs) and examination score.
+ *
+ * Null or undefined parameters are treated as zero.
+ *
+ * @param ca1 - First continuous assessment score or null.
+ * @param ca2 - Second continuous assessment score or null.
+ * @param ca3 - Third continuous assessment score or null.
+ * @param ca4 - Fourth continuous assessment score or null.
+ * @param exam - Final examination score or null.
+ * @returns {number} Sum of all assessment components.
+ *
+ * @example
+ * ```ts
+ * const total = calculateTotal(15, 12, null, null, 50);
+ * // total => 77
+ * ```
  */
 export function calculateTotal(
   ca1: number | null,
@@ -38,8 +81,8 @@ export function calculateTotal(
 }
 
 /**
- * Default Nigerian WAEC grading scale (A1–F9)
- * Used when seeding a new school's grading scale on registration
+ * Default Nigerian WAEC grading scale (A1–F9).
+ * Used when initializing a new school's default grading configuration upon registration.
  */
 export const DEFAULT_NIGERIAN_GRADING = [
   { grade: 'A1', minScore: 75, maxScore: 100, remark: 'Excellent',  order: 1 },

@@ -1,4 +1,49 @@
-export const appConfig = () => ({
+/**
+ * @fileoverview Application configuration factory loading settings from environment variables.
+ * Provides port, CORS, JWT, file upload, and super admin defaults.
+ * @module common/config/app
+ */
+
+/**
+ * Interface representing the application configuration settings.
+ */
+export interface AppConfiguration {
+  port: number;
+  corsOrigins: string[];
+  jwt: {
+    secret: string;
+    refreshSecret: string;
+    expiresIn: string;
+    refreshExpiresIn: string;
+  };
+  upload: {
+    maxFileSizeMb: number;
+    uploadPath: string;
+  };
+  superAdmin: {
+    email?: string;
+    password?: string;
+    name: string;
+  };
+}
+
+/**
+ * Generates application configuration mapping environment variables into typed structures.
+ *
+ * @returns {AppConfiguration} Structured configuration object for NestJS ConfigModule.
+ *
+ * @example
+ * ```ts
+ * import { ConfigModule } from '@nestjs/config';
+ * import { appConfig } from './common/config/app.config';
+ *
+ * ConfigModule.forRoot({
+ *   load: [appConfig],
+ *   isGlobal: true,
+ * });
+ * ```
+ */
+export const appConfig = (): AppConfiguration => ({
   port: parseInt(process.env.PORT || '3000', 10),
   corsOrigins: process.env.CORS_ORIGINS?.split(',') || ['http://localhost:3000'],
 

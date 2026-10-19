@@ -1,23 +1,65 @@
+/**
+ * @fileoverview Dashboard service compiling statistical analytics and role-tailored summaries
+ * for administrators, teachers, students, and platform super administrators.
+ * @module DashboardService
+ * @author Edutrack Engineering Team
+ * @created 1.0.0
+ */
+
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 
+/**
+ * Service calculating aggregate metrics and context data for dashboards across all system roles.
+ * @module DashboardService
+ */
 @Injectable()
 export class DashboardService {
+  /**
+   * Initializes DashboardService with database client.
+   *
+   * @param {PrismaService} prisma - Prisma database access service
+   */
   constructor(private prisma: PrismaService) {}
 
-  // ── Admin dashboard ────────────────────────────────────────────────
+  /**
+   * Retrieve aggregate metrics for the school administrator dashboard.
+   *
+   * Compiles headcounts of active students, teachers, and classes, pending result submissions,
+   * and the active academic session / open term status.
+   *
+   * @async
+   * @function getAdminDashboard
+   *
+   * @param {string} schoolId - UUID of the target school
+   * @returns {Promise<{ data: any; message: string }>} Admin dashboard statistical payload
+   *
+   * @example
+   * const stats = await dashboardService.getAdminDashboard('school-uuid');
+   * // Returns: {
+   * //   data: { studentCount: 150, teacherCount: 12, classCount: 6, pendingResults: 2, ... },
+   * //   message: 'Admin dashboard retrieved'
+   * // }
+   */
   async getAdminDashboard(schoolId: string) {
-    const [studentCount, teacherCount, classCount, pendingResults, activeSession] =
-      await Promise.all([
-        this.prisma.student.count({ where: { schoolId, status: 'ACTIVE' } }),
-        this.prisma.teacher.count({ where: { schoolId, isActive: true } }),
-        this.prisma.class.count({ where: { schoolId, isActive: true } }),
-        this.prisma.resultSubmission.count({ where: { class: { schoolId }, status: 'SUBMITTED' } }),
-        this.prisma.academicSession.findFirst({
-          where: { schoolId, isActive: true },
-          include: { terms: { where: { isOpen: true }, take: 1 } },
-        }),
-      ]);
+    const [
+      studentCount,
+      teacherCount,
+      classCount,
+      pendingResults,
+      activeSession,
+    ] = await Promise.all([
+      this.prisma.student.count({ where: { schoolId, status: 'ACTIVE' } }),
+      this.prisma.teacher.count({ where: { schoolId, isActive: true } }),
+      this.prisma.class.count({ where: { schoolId, isActive: true } }),
+      this.prisma.resultSubmission.count({
+        where: { class: { schoolId }, status: 'SUBMITTED' },
+      }),
+      this.prisma.academicSession.findFirst({
+        where: { schoolId, isActive: true },
+        include: { terms: { where: { isOpen: true }, take: 1 } },
+      }),
+    ]);
 
     return {
       data: {
@@ -32,7 +74,22 @@ export class DashboardService {
     };
   }
 
-  // ── Teacher dashboard ──────────────────────────────────────────────
+  /**
+   * Retrieve teacher dashboard summary including assigned class, student count, and term submission status.
+   *
+   * @async
+   * @function getTeacherDashboard
+   *
+   * @param {string} userId - UUID of the authenticated teacher user
+   * @param {string} schoolId - UUID of the school
+   * @returns {Promise<{ data: any; message: string }>} Teacher dashboard payload
+   *
+   * @throws {NotFoundException} When teacher profile is not found
+   *
+   * @example
+   * const stats = await dashboardService.getTeacherDashboard('user-uuid', 'school-uuid');
+   * // Returns: { data: { fullName: 'Mr. John Adeyemi', assignedClass: {...}, ... }, message: '...' }
+   */
   async getTeacherDashboard(userId: string, schoolId: string) {
     const teacher = await this.prisma.teacher.findFirst({
       where: { userId, schoolId },
@@ -63,14 +120,19 @@ export class DashboardService {
 
       if (activeSession?.terms[0]) {
         const submission = await this.prisma.resultSubmission.findFirst({
-          where: { classId: assignedClass.id, termId: activeSession.terms[0].id },
+          where: {
+            classId: assignedClass.id,
+            termId: activeSession.terms[0].id,
+          },
           select: { status: true },
         });
         resultStatus = submission?.status || 'NOT_STARTED';
       }
     }
 
-    const subjectCount = await this.prisma.subject.count({ where: { schoolId, isActive: true } });
+    const subjectCount = await this.prisma.subject.count({
+      where: { schoolId, isActive: true },
+    });
 
     return {
       data: {
@@ -87,7 +149,22 @@ export class DashboardService {
     };
   }
 
-  // ── Student dashboard ──────────────────────────────────────────────
+  /**
+   * Retrieve student dashboard summary including current class and latest published result average.
+   *
+   * @async
+   * @function getStudentDashboard
+   *
+   * @param {string} userId - UUID of the authenticated student user
+   * @param {string} schoolId - UUID of the school
+   * @returns {Promise<{ data: any; message: string }>} Student dashboard payload
+   *
+   * @throws {NotFoundException} When student profile is not found
+   *
+   * @example
+   * const stats = await dashboardService.getStudentDashboard('user-uuid', 'school-uuid');
+   * // Returns: { data: { fullName: 'David Okafor', class: {...}, latestResults: {...} }, message: '...' }
+   */
   async getStudentDashboard(userId: string, schoolId: string) {
     const student = await this.prisma.student.findFirst({
       where: { userId, schoolId },
@@ -106,7 +183,10 @@ export class DashboardService {
       const scores = await this.prisma.score.findMany({
         where: {
           studentId: student.id,
-          submission: { termId: activeSession.terms[0].id, status: 'PUBLISHED' },
+          submission: {
+            termId: activeSession.terms[0].id,
+            status: 'PUBLISHED',
+          },
         },
         select: { total: true },
       });
@@ -135,17 +215,37 @@ export class DashboardService {
     };
   }
 
-  // ── Super Admin dashboard ──────────────────────────────────────────
+  /**
+   * Retrieve platform-wide macro metrics for Super Administrator dashboard.
+   *
+   * Computes system-wide totals across schools, active vs suspended tenants, and total enrollments.
+   *
+   * @async
+   * @function getSuperAdminDashboard
+   *
+   * @returns {Promise<{ data: any; message: string }>} Super Admin dashboard metrics
+   *
+   * @example
+   * const platformStats = await dashboardService.getSuperAdminDashboard();
+   * // Returns: { data: { totalSchools: 10, activeSchools: 9, totalStudents: 2500, ... }, message: '...' }
+   */
   async getSuperAdminDashboard() {
-    const [totalSchools, activeSchools, totalStudents, totalTeachers] = await Promise.all([
-      this.prisma.school.count(),
-      this.prisma.school.count({ where: { isActive: true } }),
-      this.prisma.student.count(),
-      this.prisma.teacher.count(),
-    ]);
+    const [totalSchools, activeSchools, totalStudents, totalTeachers] =
+      await Promise.all([
+        this.prisma.school.count(),
+        this.prisma.school.count({ where: { isActive: true } }),
+        this.prisma.student.count(),
+        this.prisma.teacher.count(),
+      ]);
 
     return {
-      data: { totalSchools, activeSchools, suspendedSchools: totalSchools - activeSchools, totalStudents, totalTeachers },
+      data: {
+        totalSchools,
+        activeSchools,
+        suspendedSchools: totalSchools - activeSchools,
+        totalStudents,
+        totalTeachers,
+      },
       message: 'Platform dashboard retrieved',
     };
   }

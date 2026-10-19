@@ -1,3 +1,11 @@
+/**
+ * @fileoverview Results service managing class result submissions, continuous assessment/exam scoring,
+ * automated WAEC grade calculations, class rank position assignments, and result publishing.
+ * @module ResultsService
+ * @author Edutrack Engineering Team
+ * @created 1.0.0
+ */
+
 import {
   Injectable,
   NotFoundException,
@@ -9,14 +17,37 @@ import { GradingService } from '../grading/grading.service';
 import { SaveScoresDto } from './dto';
 import { calculateGrade, calculateTotal } from '../common/utils/grade.util';
 
+/**
+ * Service managing student score records, teacher submissions, position ranking calculations,
+ * and administrative publication.
+ * @module ResultsService
+ */
 @Injectable()
 export class ResultsService {
+  /**
+   * Initializes ResultsService with database client and grading service.
+   *
+   * @param {PrismaService} prisma - Prisma database service
+   * @param {GradingService} gradingService - Grading scale calculation service
+   */
   constructor(
     private prisma: PrismaService,
     private gradingService: GradingService,
   ) {}
 
-  // ── List all submissions for active term (admin view) ──────────────
+  /**
+   * List all result submissions for the active term across classes (Administrator view).
+   *
+   * @async
+   * @function getSubmissions
+   *
+   * @param {string} schoolId - UUID of the target school
+   * @returns {Promise<{ data: any[]; message: string }>} Submissions list with class and teacher info
+   *
+   * @example
+   * const submissions = await resultsService.getSubmissions('school-uuid');
+   * // Returns: { data: [...submissions], message: 'Submissions retrieved' }
+   */
   async getSubmissions(schoolId: string) {
     const activeSession = await this.prisma.academicSession.findFirst({
       where: { schoolId, isActive: true },
@@ -26,7 +57,9 @@ export class ResultsService {
     const submissions = await this.prisma.resultSubmission.findMany({
       where: {
         class: { schoolId },
-        ...(activeSession?.terms[0] ? { termId: activeSession.terms[0].id } : {}),
+        ...(activeSession?.terms[0]
+          ? { termId: activeSession.terms[0].id }
+          : {}),
       },
       include: {
         class: { select: { id: true, name: true } },
@@ -38,16 +71,30 @@ export class ResultsService {
 
     return {
       data: submissions.map((s) => ({
-        id: s.id, status: s.status,
-        class: s.class, term: s.term,
+        id: s.id,
+        status: s.status,
+        class: s.class,
+        term: s.term,
         teacher: { id: s.teacherId, fullName: s.teacher.user.fullName },
-        submittedAt: s.submittedAt, publishedAt: s.publishedAt,
+        submittedAt: s.submittedAt,
+        publishedAt: s.publishedAt,
       })),
       message: 'Submissions retrieved',
     };
   }
 
-  // ── Get pending submissions (SUBMITTED, not yet published) ─────────
+  /**
+   * List submissions currently in 'SUBMITTED' status awaiting administrative publication.
+   *
+   * @async
+   * @function getPendingSubmissions
+   *
+   * @param {string} schoolId - UUID of the target school
+   * @returns {Promise<{ data: any[]; message: string }>} Pending submissions awaiting review
+   *
+   * @example
+   * const pending = await resultsService.getPendingSubmissions('school-uuid');
+   */
   async getPendingSubmissions(schoolId: string) {
     const submissions = await this.prisma.resultSubmission.findMany({
       where: { class: { schoolId }, status: 'SUBMITTED' },
@@ -62,7 +109,21 @@ export class ResultsService {
     return { data: submissions, message: 'Pending submissions retrieved' };
   }
 
-  // ── Get full submission with all scores ────────────────────────────
+  /**
+   * Retrieve a full submission including all individual student score records.
+   *
+   * @async
+   * @function getSubmissionById
+   *
+   * @param {string} submissionId - UUID of the submission
+   * @param {string} schoolId - UUID of the school
+   * @returns {Promise<{ data: any; message: string }>} Full submission record with nested scores
+   *
+   * @throws {NotFoundException} When submission is not found
+   *
+   * @example
+   * const submission = await resultsService.getSubmissionById('sub-uuid', 'school-uuid');
+   */
   async getSubmissionById(submissionId: string, schoolId: string) {
     const submission = await this.prisma.resultSubmission.findFirst({
       where: { id: submissionId, class: { schoolId } },
@@ -72,8 +133,17 @@ export class ResultsService {
         teacher: { include: { user: { select: { fullName: true } } } },
         scores: {
           include: {
-            student: { select: { id: true, fullName: true, admissionNumber: true, studentId: true } },
-            subject: { select: { id: true, name: true, code: true, displayOrder: true } },
+            student: {
+              select: {
+                id: true,
+                fullName: true,
+                admissionNumber: true,
+                studentId: true,
+              },
+            },
+            subject: {
+              select: { id: true, name: true, code: true, displayOrder: true },
+            },
           },
           orderBy: { subject: { displayOrder: 'asc' } },
         },
@@ -84,9 +154,37 @@ export class ResultsService {
     return { data: submission, message: 'Submission retrieved' };
   }
 
-  // ── Save/update draft scores ───────────────────────────────────────
-  // Only the class teacher of the class can call this
-  async saveScores(teacherUserId: string, schoolId: string, dto: SaveScoresDto) {
+  /**
+   * Save or update draft scores for a class.
+   *
+   * Only the designated class teacher of the target class can record scores.
+   * Validates score limits against school settings (ca1-ca4 max, exam max).
+   * Automatically computes total score, WAEC letter grade, and remark.
+   *
+   * @async
+   * @function saveScores
+   *
+   * @param {string} teacherUserId - UUID of the teacher user
+   * @param {string} schoolId - UUID of the school
+   * @param {SaveScoresDto} dto - Scores payload
+   * @returns {Promise<{ data: any; message: string }>} Draft submission status
+   *
+   * @throws {NotFoundException} Teacher, class, term, or school settings not found
+   * @throws {ForbiddenException} Caller is not the assigned class teacher
+   * @throws {BadRequestException} Term is closed, submission already submitted, or scores exceed max limits
+   *
+   * @example
+   * const draft = await resultsService.saveScores('teacher-user-uuid', 'school-uuid', {
+   *   classId: 'class-uuid',
+   *   termId: 'term-uuid',
+   *   scores: [...]
+   * });
+   */
+  async saveScores(
+    teacherUserId: string,
+    schoolId: string,
+    dto: SaveScoresDto,
+  ) {
     // Get teacher record
     const teacher = await this.prisma.teacher.findFirst({
       where: { userId: teacherUserId, schoolId },
@@ -116,7 +214,9 @@ export class ResultsService {
     }
 
     // Get school settings for score validation
-    const settings = await this.prisma.schoolSettings.findUnique({ where: { schoolId } });
+    const settings = await this.prisma.schoolSettings.findUnique({
+      where: { schoolId },
+    });
     if (!settings) throw new NotFoundException('School settings not found');
 
     // Get grading scale for auto-grade calculation
@@ -135,7 +235,12 @@ export class ResultsService {
 
     if (!submission) {
       submission = await this.prisma.resultSubmission.create({
-        data: { teacherId: teacher.id, classId: dto.classId, termId: dto.termId, status: 'DRAFT' },
+        data: {
+          teacherId: teacher.id,
+          classId: dto.classId,
+          termId: dto.termId,
+          status: 'DRAFT',
+        },
       });
     }
 
@@ -143,20 +248,32 @@ export class ResultsService {
     for (const entry of dto.scores) {
       // Validate scores against school maximums
       if (entry.ca1 !== undefined && entry.ca1 > settings.ca1Max)
-        throw new BadRequestException(`CA1 score ${entry.ca1} exceeds maximum of ${settings.ca1Max}`);
+        throw new BadRequestException(
+          `CA1 score ${entry.ca1} exceeds maximum of ${settings.ca1Max}`,
+        );
       if (entry.ca2 !== undefined && entry.ca2 > settings.ca2Max)
-        throw new BadRequestException(`CA2 score ${entry.ca2} exceeds maximum of ${settings.ca2Max}`);
+        throw new BadRequestException(
+          `CA2 score ${entry.ca2} exceeds maximum of ${settings.ca2Max}`,
+        );
       if (entry.ca3 !== undefined && entry.ca3 > settings.ca3Max)
-        throw new BadRequestException(`CA3 score ${entry.ca3} exceeds maximum of ${settings.ca3Max}`);
+        throw new BadRequestException(
+          `CA3 score ${entry.ca3} exceeds maximum of ${settings.ca3Max}`,
+        );
       if (entry.ca4 !== undefined && entry.ca4 > settings.ca4Max)
-        throw new BadRequestException(`CA4 score ${entry.ca4} exceeds maximum of ${settings.ca4Max}`);
+        throw new BadRequestException(
+          `CA4 score ${entry.ca4} exceeds maximum of ${settings.ca4Max}`,
+        );
       if (entry.exam !== undefined && entry.exam > settings.examMax)
-        throw new BadRequestException(`Exam score ${entry.exam} exceeds maximum of ${settings.examMax}`);
+        throw new BadRequestException(
+          `Exam score ${entry.exam} exceeds maximum of ${settings.examMax}`,
+        );
 
       // Auto-calculate total, grade, remark
       const total = calculateTotal(
-        entry.ca1 ?? null, entry.ca2 ?? null,
-        entry.ca3 ?? null, entry.ca4 ?? null,
+        entry.ca1 ?? null,
+        entry.ca2 ?? null,
+        entry.ca3 ?? null,
+        entry.ca4 ?? null,
         entry.exam ?? null,
       );
       const gradeResult = calculateGrade(total, gradingScales);
@@ -170,34 +287,81 @@ export class ResultsService {
           },
         },
         update: {
-          ca1: entry.ca1, ca2: entry.ca2, ca3: entry.ca3, ca4: entry.ca4,
-          exam: entry.exam, total,
-          grade: gradeResult?.grade, remark: gradeResult?.remark,
+          ca1: entry.ca1,
+          ca2: entry.ca2,
+          ca3: entry.ca3,
+          ca4: entry.ca4,
+          exam: entry.exam,
+          total,
+          grade: gradeResult?.grade,
+          remark: gradeResult?.remark,
         },
         create: {
           submissionId: submission.id,
-          studentId: entry.studentId, subjectId: entry.subjectId,
-          ca1: entry.ca1, ca2: entry.ca2, ca3: entry.ca3, ca4: entry.ca4,
-          exam: entry.exam, total,
-          grade: gradeResult?.grade, remark: gradeResult?.remark,
+          studentId: entry.studentId,
+          subjectId: entry.subjectId,
+          ca1: entry.ca1,
+          ca2: entry.ca2,
+          ca3: entry.ca3,
+          ca4: entry.ca4,
+          exam: entry.exam,
+          total,
+          grade: gradeResult?.grade,
+          remark: gradeResult?.remark,
         },
       });
     }
 
     await this.prisma.auditLog.create({
       data: {
-        schoolId, userId: teacherUserId,
-        action: 'UPDATE', entity: 'ResultSubmission', entityId: submission.id,
+        schoolId,
+        userId: teacherUserId,
+        action: 'UPDATE',
+        entity: 'ResultSubmission',
+        entityId: submission.id,
         after: { scoresEntered: dto.scores.length } as any,
       },
     });
 
-    return { data: { submissionId: submission.id, status: 'DRAFT', scoresEntered: dto.scores.length }, message: 'Scores saved as draft' };
+    return {
+      data: {
+        submissionId: submission.id,
+        status: 'DRAFT',
+        scoresEntered: dto.scores.length,
+      },
+      message: 'Scores saved as draft',
+    };
   }
 
-  // ── Submit result (locks it) ───────────────────────────────────────
-  async submitResult(submissionId: string, teacherUserId: string, schoolId: string) {
-    const teacher = await this.prisma.teacher.findFirst({ where: { userId: teacherUserId, schoolId } });
+  /**
+   * Finalize and submit class results for administrative review.
+   *
+   * Locks the submission from further edits. Validates that every active student in the class
+   * has at least one recorded score.
+   *
+   * @async
+   * @function submitResult
+   *
+   * @param {string} submissionId - UUID of the submission
+   * @param {string} teacherUserId - UUID of the teacher user submitting
+   * @param {string} schoolId - UUID of the school
+   * @returns {Promise<{ message: string }>} Confirmation message
+   *
+   * @throws {NotFoundException} Teacher or submission not found
+   * @throws {ForbiddenException} Teacher does not own this submission
+   * @throws {BadRequestException} Submission not in DRAFT or active students have unrecorded scores
+   *
+   * @example
+   * const res = await resultsService.submitResult('sub-uuid', 'teacher-user-uuid', 'school-uuid');
+   */
+  async submitResult(
+    submissionId: string,
+    teacherUserId: string,
+    schoolId: string,
+  ) {
+    const teacher = await this.prisma.teacher.findFirst({
+      where: { userId: teacherUserId, schoolId },
+    });
     if (!teacher) throw new NotFoundException('Teacher not found');
 
     const submission = await this.prisma.resultSubmission.findFirst({
@@ -229,14 +393,45 @@ export class ResultsService {
     });
 
     await this.prisma.auditLog.create({
-      data: { schoolId, userId: teacherUserId, action: 'SUBMIT', entity: 'ResultSubmission', entityId: submissionId },
+      data: {
+        schoolId,
+        userId: teacherUserId,
+        action: 'SUBMIT',
+        entity: 'ResultSubmission',
+        entityId: submissionId,
+      },
     });
 
-    return { message: 'Result submitted successfully. Admin can now publish it.' };
+    return {
+      message: 'Result submitted successfully. Admin can now publish it.',
+    };
   }
 
-  // ── Publish result (admin only) ────────────────────────────────────
-  async publishResult(submissionId: string, adminUserId: string, schoolId: string) {
+  /**
+   * Publish results for student and parent visibility.
+   *
+   * Moves submission to 'PUBLISHED' status, records approval and audit logs,
+   * and calculates class positions/averages (with tied rank handling).
+   *
+   * @async
+   * @function publishResult
+   *
+   * @param {string} submissionId - UUID of the submission to publish
+   * @param {string} adminUserId - UUID of the administrator publishing
+   * @param {string} schoolId - UUID of the school
+   * @returns {Promise<{ message: string }>} Confirmation message
+   *
+   * @throws {NotFoundException} Submission not found
+   * @throws {BadRequestException} Submission status is not 'SUBMITTED'
+   *
+   * @example
+   * const res = await resultsService.publishResult('sub-uuid', 'admin-uuid', 'school-uuid');
+   */
+  async publishResult(
+    submissionId: string,
+    adminUserId: string,
+    schoolId: string,
+  ) {
     const submission = await this.prisma.resultSubmission.findFirst({
       where: { id: submissionId, class: { schoolId } },
     });
@@ -248,7 +443,11 @@ export class ResultsService {
       // Update status to PUBLISHED
       await tx.resultSubmission.update({
         where: { id: submissionId },
-        data: { status: 'PUBLISHED', publishedAt: new Date(), publishedBy: adminUserId },
+        data: {
+          status: 'PUBLISHED',
+          publishedAt: new Date(),
+          publishedBy: adminUserId,
+        },
       });
 
       // Calculate positions — done at publish time, never before
@@ -260,21 +459,46 @@ export class ResultsService {
       });
 
       await tx.auditLog.create({
-        data: { schoolId, userId: adminUserId, action: 'PUBLISH', entity: 'ResultSubmission', entityId: submissionId },
+        data: {
+          schoolId,
+          userId: adminUserId,
+          action: 'PUBLISH',
+          entity: 'ResultSubmission',
+          entityId: submissionId,
+        },
       });
     });
 
-    return { message: 'Result published. Students can now view their results.' };
+    return {
+      message: 'Result published. Students can now view their results.',
+    };
   }
 
-  // ── Get class positions (after publish) ────────────────────────────
+  /**
+   * Retrieve calculated class positions and student performance averages after publish.
+   *
+   * @async
+   * @function getPositions
+   *
+   * @param {string} submissionId - UUID of the submission
+   * @param {string} schoolId - UUID of the school
+   * @returns {Promise<{ data: any[]; message: string }>} Ranked student positions
+   *
+   * @throws {NotFoundException} Submission not found
+   * @throws {BadRequestException} Results are not yet in 'PUBLISHED' state
+   *
+   * @example
+   * const positions = await resultsService.getPositions('sub-uuid', 'school-uuid');
+   */
   async getPositions(submissionId: string, schoolId: string) {
     const submission = await this.prisma.resultSubmission.findFirst({
       where: { id: submissionId, class: { schoolId } },
     });
     if (!submission) throw new NotFoundException('Submission not found');
     if (submission.status !== 'PUBLISHED')
-      throw new BadRequestException('Positions are only available after publishing');
+      throw new BadRequestException(
+        'Positions are only available after publishing',
+      );
 
     const positions = await this.prisma.resultPosition.findMany({
       where: { submissionId },
@@ -298,53 +522,22 @@ export class ResultsService {
     return { data: enriched, message: 'Positions retrieved' };
   }
 
-  // ── Private: calculate positions at publish time ───────────────────
-  private async calculatePositions(tx: any, submissionId: string) {
-    // Get total score per student across all subjects
-    const scores = await tx.score.groupBy({
-      by: ['studentId'],
-      where: { submissionId },
-      _sum: { total: true },
-      _count: { total: true },
-    });
-
-    // Sort by total descending → assign positions
-    const ranked = scores
-      .map((s: any) => ({
-        studentId: s.studentId,
-        totalScore: s._sum.total ?? 0,
-        subjectCount: s._count.total,
-        average: s._count.total > 0 ? (s._sum.total ?? 0) / s._count.total : 0,
-      }))
-      .sort((a: any, b: any) => b.totalScore - a.totalScore);
-
-    // Handle ties — students with same total get the same position
-    let currentPosition = 1;
-    for (let i = 0; i < ranked.length; i++) {
-      if (i > 0 && ranked[i].totalScore < ranked[i - 1].totalScore) {
-        currentPosition = i + 1;
-      }
-      await tx.resultPosition.upsert({
-        where: { submissionId_studentId: { submissionId, studentId: ranked[i].studentId } },
-        update: {
-          position: currentPosition,
-          totalScore: ranked[i].totalScore,
-          average: Math.round(ranked[i].average * 10) / 10,
-          calculatedAt: new Date(),
-        },
-        create: {
-          submissionId,
-          studentId: ranked[i].studentId,
-          position: currentPosition,
-          totalScore: ranked[i].totalScore,
-          average: Math.round(ranked[i].average * 10) / 10,
-        },
-      });
-    }
-  }
-
-  // ── Get scores for one subject within a submission ─────────────────
-  // Used by sc-result-details (admin) and sc-subject-score-view (teacher)
+  /**
+   * Retrieve score details for a specific subject within a submission along with class subject average.
+   *
+   * @async
+   * @function getSubmissionBySubject
+   *
+   * @param {string} submissionId - UUID of the submission
+   * @param {string} subjectId - UUID of the subject
+   * @param {string} schoolId - UUID of the school
+   * @returns {Promise<{ data: any; message: string }>} Subject scores and class average
+   *
+   * @throws {NotFoundException} When submission or subject is not found
+   *
+   * @example
+   * const subjectScores = await resultsService.getSubmissionBySubject('sub-uuid', 'subject-uuid', 'school-uuid');
+   */
   async getSubmissionBySubject(
     submissionId: string,
     subjectId: string,
@@ -370,8 +563,10 @@ export class ResultsService {
       include: {
         student: {
           select: {
-            id: true, fullName: true,
-            admissionNumber: true, studentId: true,
+            id: true,
+            fullName: true,
+            admissionNumber: true,
+            studentId: true,
           },
         },
       },
@@ -381,7 +576,9 @@ export class ResultsService {
     const totals = scores.map((s) => s.total ?? 0);
     const average =
       totals.length > 0
-        ? Math.round((totals.reduce((a, b) => a + b, 0) / totals.length) * 10) / 10
+        ? Math.round(
+            (totals.reduce((a, b) => a + b, 0) / totals.length) * 10,
+          ) / 10
         : 0;
 
     return {
@@ -395,14 +592,78 @@ export class ResultsService {
         subject,
         scores: scores.map((s) => ({
           student: s.student,
-          ca1: s.ca1, ca2: s.ca2, ca3: s.ca3, ca4: s.ca4,
-          exam: s.exam, total: s.total,
-          grade: s.grade, remark: s.remark,
+          ca1: s.ca1,
+          ca2: s.ca2,
+          ca3: s.ca3,
+          ca4: s.ca4,
+          exam: s.exam,
+          total: s.total,
+          grade: s.grade,
+          remark: s.remark,
         })),
         classAverage: average,
         studentCount: scores.length,
       },
       message: 'Subject scores retrieved',
     };
+  }
+
+  /**
+   * Internal helper calculating class rankings and averages with tied score handling.
+   *
+   * @async
+   * @function calculatePositions
+   *
+   * @param {any} tx - Prisma transaction client
+   * @param {string} submissionId - UUID of the submission being published
+   */
+  private async calculatePositions(tx: any, submissionId: string) {
+    // Get total score per student across all subjects
+    const scores = await tx.score.groupBy({
+      by: ['studentId'],
+      where: { submissionId },
+      _sum: { total: true },
+      _count: { total: true },
+    });
+
+    // Sort by total descending → assign positions
+    const ranked = scores
+      .map((s: any) => ({
+        studentId: s.studentId,
+        totalScore: s._sum.total ?? 0,
+        subjectCount: s._count.total,
+        average:
+          s._count.total > 0 ? (s._sum.total ?? 0) / s._count.total : 0,
+      }))
+      .sort((a: any, b: any) => b.totalScore - a.totalScore);
+
+    // Handle ties — students with same total get the same position
+    let currentPosition = 1;
+    for (let i = 0; i < ranked.length; i++) {
+      if (i > 0 && ranked[i].totalScore < ranked[i - 1].totalScore) {
+        currentPosition = i + 1;
+      }
+      await tx.resultPosition.upsert({
+        where: {
+          submissionId_studentId: {
+            submissionId,
+            studentId: ranked[i].studentId,
+          },
+        },
+        update: {
+          position: currentPosition,
+          totalScore: ranked[i].totalScore,
+          average: Math.round(ranked[i].average * 10) / 10,
+          calculatedAt: new Date(),
+        },
+        create: {
+          submissionId,
+          studentId: ranked[i].studentId,
+          position: currentPosition,
+          totalScore: ranked[i].totalScore,
+          average: Math.round(ranked[i].average * 10) / 10,
+        },
+      });
+    }
   }
 }

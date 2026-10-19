@@ -1,3 +1,10 @@
+/**
+ * @fileoverview Student CSV import service.
+ * Parses student roster CSVs, validates rows against class rosters and unique admission numbers,
+ * provides preview tokens, and executes batch student generation.
+ * @module students/csv/student-csv.service
+ */
+
 import { Injectable, BadRequestException } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
 import { StudentsService } from '../students.service';
@@ -7,6 +14,9 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 
+/**
+ * Representation of a parsed CSV row for student bulk upload.
+ */
 export interface StudentCsvRow {
   rowNumber: number;
   fullName: string;
@@ -20,19 +30,47 @@ export interface StudentCsvRow {
   resolvedClassId?: string;
 }
 
+/**
+ * In-memory preview store mapping preview tokens to parsed CSV rows.
+ */
 const previewStore = new Map<
   string,
-  { rows: StudentCsvRow[]; schoolId: string; uploadedBy: string; fileId?: string }
+  {
+    rows: StudentCsvRow[];
+    schoolId: string;
+    uploadedBy: string;
+    fileId?: string;
+  }
 >();
 
+/**
+ * Service managing CSV parsing, row verification, and confirmation imports for students.
+ */
 @Injectable()
 export class StudentCsvService {
+  /**
+   * Initializes the StudentCsvService.
+   *
+   * @param prisma - Prisma database client.
+   * @param studentsService - Service executing student creation.
+   */
   constructor(
     private prisma: PrismaService,
     private studentsService: StudentsService,
   ) {}
 
-  // ── Download CSV template ──────────────────────────────────────────
+  /**
+   * Generates or fetches the standard CSV template file on the temporary filesystem.
+   *
+   * Note: The `studentId` column is omitted because it is always auto-generated.
+   *
+   * @returns {string} Absolute path to the student CSV template.
+   *
+   * @example
+   * ```ts
+   * const path = studentCsvService.getTemplatePath();
+   * ```
+   */
   public getTemplatePath(): string {
     const dir = path.join(os.tmpdir(), 'templates');
     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
@@ -48,7 +86,21 @@ export class StudentCsvService {
     return filePath;
   }
 
-  // ── Upload CSV → parse → return preview ───────────────────────────
+  /**
+   * Parses uploaded CSV buffer, validates student fields and class references, and returns a preview summary.
+   *
+   * @param fileBuffer - Raw buffer of uploaded file.
+   * @param originalName - Original filename.
+   * @param schoolId - UUID of the school.
+   * @param uploadedBy - UUID of the administrator uploading the file.
+   * @returns Preview token, breakdown counts, and parsed row array.
+   * @throws {BadRequestException} If the file is empty or missing required columns.
+   *
+   * @example
+   * ```ts
+   * const preview = await studentCsvService.uploadCsv(file.buffer, 'students.csv', 'school-uuid', 'admin-uuid');
+   * ```
+   */
   async uploadCsv(
     fileBuffer: Buffer,
     originalName: string,
@@ -64,8 +116,17 @@ export class StudentCsvService {
     if (lines.length < 2)
       throw new BadRequestException('CSV file is empty or has no data rows');
 
-    const headers = lines[0].toLowerCase().split(',').map((h) => h.trim());
-    for (const req of ['fullname', 'gender', 'dateofbirth', 'classname', 'admissionnumber']) {
+    const headers = lines[0]
+      .toLowerCase()
+      .split(',')
+      .map((h) => h.trim());
+    for (const req of [
+      'fullname',
+      'gender',
+      'dateofbirth',
+      'classname',
+      'admissionnumber',
+    ]) {
       if (!headers.includes(req))
         throw new BadRequestException(`CSV missing required column: ${req}`);
     }
@@ -82,7 +143,9 @@ export class StudentCsvService {
       where: { schoolId },
       select: { admissionNumber: true },
     });
-    const admNumSet = new Set(existingAdmNums.map((s) => s.admissionNumber.toLowerCase()));
+    const admNumSet = new Set(
+      existingAdmNums.map((s) => s.admissionNumber.toLowerCase()),
+    );
 
     const rows: StudentCsvRow[] = [];
     const admNumsInBatch = new Set<string>(); // Catch duplicates within the CSV itself
@@ -90,7 +153,9 @@ export class StudentCsvService {
     for (let i = 1; i < lines.length; i++) {
       const values = lines[i].split(',').map((v) => v.trim());
       const col: any = {};
-      headers.forEach((h, idx) => { col[h] = values[idx] || ''; });
+      headers.forEach((h, idx) => {
+        col[h] = values[idx] || '';
+      });
 
       const row: StudentCsvRow = {
         rowNumber: i,
@@ -104,23 +169,33 @@ export class StudentCsvService {
 
       // Validate each field
       if (!row.fullName || row.fullName.length < 2) {
-        row.status = 'ERROR'; row.reason = 'fullName is required (min 2 chars)';
+        row.status = 'ERROR';
+        row.reason = 'fullName is required (min 2 chars)';
       } else if (!['MALE', 'FEMALE'].includes(row.gender)) {
-        row.status = 'ERROR'; row.reason = 'gender must be MALE or FEMALE';
+        row.status = 'ERROR';
+        row.reason = 'gender must be MALE or FEMALE';
       } else if (!row.dateOfBirth || isNaN(Date.parse(row.dateOfBirth))) {
-        row.status = 'ERROR'; row.reason = 'dateOfBirth must be a valid date e.g. 2015-04-10';
+        row.status = 'ERROR';
+        row.reason = 'dateOfBirth must be a valid date e.g. 2015-04-10';
       } else if (!row.className) {
-        row.status = 'ERROR'; row.reason = 'className is required';
+        row.status = 'ERROR';
+        row.reason = 'className is required';
       } else if (!classMap.has(row.className.toLowerCase())) {
-        row.status = 'ERROR'; row.reason = `Class "${row.className}" not found in this school`;
+        row.status = 'ERROR';
+        row.reason = `Class "${row.className}" not found in this school`;
       } else if (!row.admissionNumber) {
-        row.status = 'ERROR'; row.reason = 'admissionNumber is required — admin must provide it';
+        row.status = 'ERROR';
+        row.reason = 'admissionNumber is required — admin must provide it';
       } else if (admNumSet.has(row.admissionNumber.toLowerCase())) {
-        row.status = 'ERROR'; row.reason = `Admission number "${row.admissionNumber}" already exists in this school`;
+        row.status = 'ERROR';
+        row.reason = `Admission number "${row.admissionNumber}" already exists in this school`;
       } else if (admNumsInBatch.has(row.admissionNumber.toLowerCase())) {
-        row.status = 'ERROR'; row.reason = `Admission number "${row.admissionNumber}" appears more than once in this CSV`;
+        row.status = 'ERROR';
+        row.reason = `Admission number "${row.admissionNumber}" appears more than once in this CSV`;
       } else {
-        row.resolvedClassId = classMap.get(row.className.toLowerCase())!.id;
+        row.resolvedClassId = classMap.get(
+          row.className.toLowerCase(),
+        )!.id;
         admNumsInBatch.add(row.admissionNumber.toLowerCase());
       }
 
@@ -132,7 +207,8 @@ export class StudentCsvService {
 
     const fileRecord = await this.prisma.file.create({
       data: {
-        schoolId, uploadedBy,
+        schoolId,
+        uploadedBy,
         fileName: originalName,
         fileType: 'STUDENT_IMPORT',
         mimeType: 'text/csv',
@@ -142,7 +218,12 @@ export class StudentCsvService {
     });
 
     const previewToken = uuid();
-    previewStore.set(previewToken, { rows, schoolId, uploadedBy, fileId: fileRecord.id });
+    previewStore.set(previewToken, {
+      rows,
+      schoolId,
+      uploadedBy,
+      fileId: fileRecord.id,
+    });
     setTimeout(() => previewStore.delete(previewToken), 30 * 60 * 1000);
 
     return {
@@ -158,11 +239,26 @@ export class StudentCsvService {
     };
   }
 
-  // ── Confirm preview → create all valid students ────────────────────
+  /**
+   * Confirms a preview session and creates records for all valid rows in the CSV.
+   *
+   * @param previewToken - Preview token generated during upload.
+   * @param schoolId - UUID of the school.
+   * @param adminId - UUID of the administrator confirming the import.
+   * @returns Summary of imported and failed records.
+   * @throws {BadRequestException} If the preview session has expired or is invalid.
+   *
+   * @example
+   * ```ts
+   * const result = await studentCsvService.confirmCsv('preview-token', 'school-uuid', 'admin-uuid');
+   * ```
+   */
   async confirmCsv(previewToken: string, schoolId: string, adminId: string) {
     const preview = previewStore.get(previewToken);
     if (!preview)
-      throw new BadRequestException('Preview session expired. Please upload the CSV again.');
+      throw new BadRequestException(
+        'Preview session expired. Please upload the CSV again.',
+      );
     if (preview.schoolId !== schoolId)
       throw new BadRequestException('Invalid preview token');
 
@@ -191,7 +287,11 @@ export class StudentCsvService {
 
     const totalFailed = errorRows.length + runtimeFailed.length;
     const status =
-      totalFailed === 0 ? 'COMPLETED' : created === 0 ? 'FAILED' : 'PARTIALLY_COMPLETED';
+      totalFailed === 0
+        ? 'COMPLETED'
+        : created === 0
+          ? 'FAILED'
+          : 'PARTIALLY_COMPLETED';
 
     if (preview.fileId) {
       await this.prisma.file.update({
@@ -202,14 +302,26 @@ export class StudentCsvService {
 
     await this.prisma.auditLog.create({
       data: {
-        schoolId, userId: adminId,
-        action: 'IMPORT', entity: 'Student',
-        after: { created, failed: totalFailed, total: preview.rows.length } as any,
+        schoolId,
+        userId: adminId,
+        action: 'IMPORT',
+        entity: 'Student',
+        after: {
+          created,
+          failed: totalFailed,
+          total: preview.rows.length,
+        } as any,
       },
     });
 
     return {
-      data: { created, failed: totalFailed, total: preview.rows.length, status, importId: preview.fileId },
+      data: {
+        created,
+        failed: totalFailed,
+        total: preview.rows.length,
+        status,
+        importId: preview.fileId,
+      },
       message: `Import complete. ${created} students created.`,
     };
   }

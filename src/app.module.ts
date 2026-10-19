@@ -1,3 +1,11 @@
+/**
+ * @fileoverview Root application module composing configuration, rate limiting,
+ * task scheduling, database access, and all domain feature modules.
+ * @module AppModule
+ * @author Edutrack Engineering Team
+ * @created 1.0.0
+ */
+
 import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import { ThrottlerModule } from '@nestjs/throttler';
@@ -21,6 +29,10 @@ import { FilesModule } from './files/files.module';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
 
+/**
+ * Root NestJS application module orchestrating all imports, services, and route controllers.
+ * @module AppModule
+ */
 @Module({
   controllers: [AppController],
   providers: [AppService],
