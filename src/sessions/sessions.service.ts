@@ -175,6 +175,13 @@ export class SessionsService {
     if (!session) throw new NotFoundException('Session not found');
 
     await this.prisma.$transaction(async (tx) => {
+      // Switching sessions closes any term still open in the old session,
+      // so a term can never stay open outside the active session.
+      await tx.term.updateMany({
+        where: { session: { schoolId }, isOpen: true },
+        data: { isOpen: false },
+      });
+
       // Deactivate all other sessions for this school
       await tx.academicSession.updateMany({
         where: { schoolId, isActive: true },
@@ -258,9 +265,10 @@ export class SessionsService {
       );
 
     await this.prisma.$transaction(async (tx) => {
-      // Close all other terms in the session
+      // Close every other open term in the whole school (not just this session):
+      // only one term may be open per school at any time.
       await tx.term.updateMany({
-        where: { sessionId: term.sessionId, isOpen: true },
+        where: { session: { schoolId }, isOpen: true },
         data: { isOpen: false },
       });
 

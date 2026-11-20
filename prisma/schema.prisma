@@ -600,3 +600,35 @@ model AuditLog {
 
   @@map("audit_logs")
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// CSV import previews. Stored in the database (not in server memory) so that
+// upload → confirm works on serverless hosts where requests hit different instances.
+// ─────────────────────────────────────────────────────────────────────────────
+model CsvPreview {
+  token      String   @id @default(uuid())
+  schoolId   String
+  kind       String // TEACHER | STUDENT
+  uploadedBy String
+  fileId     String?
+  rows       Json
+  expiresAt  DateTime
+  createdAt  DateTime @default(now())
+
+  @@index([expiresAt])
+  @@index([schoolId])
+  @@map("csv_previews")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Shared rate-limit counters (used by PrismaThrottlerStorage). One row per
+// throttle key; works across serverless instances.
+// ─────────────────────────────────────────────────────────────────────────────
+model RateLimit {
+  key       String   @id
+  hits      Int
+  expiresAt DateTime
+
+  @@index([expiresAt])
+  @@map("rate_limits")
+}

@@ -8,7 +8,8 @@
 
 import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
-import { ThrottlerModule } from '@nestjs/throttler';
+import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
+import { APP_GUARD } from '@nestjs/core';
 import { ScheduleModule } from '@nestjs/schedule';
 import { appConfig } from './common/config/app.config';
 import { PrismaModule } from './prisma/prisma.module';
@@ -28,6 +29,8 @@ import { AuditModule } from './audit/audit.module';
 import { FilesModule } from './files/files.module';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
+import { PrismaService } from './prisma/prisma.service';
+import { PrismaThrottlerStorage } from './common/throttler/prisma-throttler.storage';
 
 /**
  * Root NestJS application module orchestrating all imports, services, and route controllers.
@@ -35,7 +38,11 @@ import { AppService } from './app.service';
  */
 @Module({
   controllers: [AppController],
-  providers: [AppService],
+  providers: [
+    AppService,
+    // ThrottlerGuard must be registered as a guard, otherwise the limits below do nothing.
+    { provide: APP_GUARD, useClass: ThrottlerGuard },
+  ],
   imports: [
     // Config — global, loads .env
     ConfigModule.forRoot({
@@ -43,8 +50,16 @@ import { AppService } from './app.service';
       load: [appConfig],
     }),
 
-    // Rate limiting — 60 requests per minute per IP
-    ThrottlerModule.forRoot([{ ttl: 60000, limit: 60 }]),
+    // Rate limiting — 60 requests per minute per IP, counted in PostgreSQL so the
+    // limit holds across serverless instances. Login/password routes are stricter
+    // (see @Throttle in auth.controller.ts).
+    ThrottlerModule.forRootAsync({
+      inject: [PrismaService],
+      useFactory: (prisma: PrismaService) => ({
+        throttlers: [{ ttl: 60000, limit: 60 }],
+        storage: new PrismaThrottlerStorage(prisma),
+      }),
+    }),
 
     // Scheduled jobs — used by future features (attendance lock etc.)
     ScheduleModule.forRoot(),
