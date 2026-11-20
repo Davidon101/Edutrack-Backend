@@ -18,11 +18,8 @@ export interface TeacherCsvRow {
   reason?: string;
 }
 
-// In-memory preview store keyed by previewToken
-const previewStore = new Map<
-  string,
-  { rows: TeacherCsvRow[]; schoolId: string; uploadedBy: string; fileId?: string }
->();
+/** How long an uploaded preview stays valid before /confirm refuses it. */
+const PREVIEW_TTL_MS = 30 * 60 * 1000;
 
 @Injectable()
 export class TeacherCsvService {
@@ -120,10 +117,21 @@ export class TeacherCsvService {
     });
 
     const previewToken = uuid();
-    previewStore.set(previewToken, { rows, schoolId, uploadedBy, fileId: fileRecord.id });
-
-    // Auto-expire after 30 minutes
-    setTimeout(() => previewStore.delete(previewToken), 30 * 60 * 1000);
+    // Stored in the database (not memory) so confirm works on any server instance.
+    await this.prisma.csvPreview.deleteMany({
+      where: { expiresAt: { lt: new Date() } },
+    });
+    await this.prisma.csvPreview.create({
+      data: {
+        token: previewToken,
+        schoolId,
+        kind: 'TEACHER',
+        uploadedBy,
+        fileId: fileRecord.id,
+        rows: rows as any,
+        expiresAt: new Date(Date.now() + PREVIEW_TTL_MS),
+      },
+    });
 
     return {
       data: {
@@ -140,13 +148,31 @@ export class TeacherCsvService {
 
   // ── Confirm preview → create all valid teachers ────────────────────
   async confirmCsv(previewToken: string, schoolId: string, adminId: string) {
-    const preview = previewStore.get(previewToken);
-    if (!preview)
+    const stored = await this.prisma.csvPreview.findUnique({
+      where: { token: previewToken },
+    });
+    if (!stored || stored.kind !== 'TEACHER' || stored.expiresAt < new Date())
       throw new BadRequestException(
         'Preview session expired or invalid. Please upload the CSV again.',
       );
-    if (preview.schoolId !== schoolId)
+    if (stored.schoolId !== schoolId)
       throw new BadRequestException('Invalid preview token');
+
+    // Claim the preview atomically so a double-click / retry cannot import twice.
+    const claimed = await this.prisma.csvPreview.deleteMany({
+      where: { token: previewToken, schoolId },
+    });
+    if (claimed.count !== 1)
+      throw new BadRequestException(
+        'This preview was already confirmed. Upload the CSV again if needed.',
+      );
+
+    const preview = {
+      rows: stored.rows as unknown as TeacherCsvRow[],
+      schoolId: stored.schoolId,
+      uploadedBy: stored.uploadedBy,
+      fileId: stored.fileId ?? undefined,
+    };
 
     const validRows = preview.rows.filter((r) => r.status === 'VALID');
     const errorRows = preview.rows.filter((r) => r.status === 'ERROR');
@@ -169,8 +195,6 @@ export class TeacherCsvService {
         runtimeFailed.push({ ...row, status: 'ERROR', reason: err.message });
       }
     }
-
-    previewStore.delete(previewToken);
 
     const totalFailed = errorRows.length + runtimeFailed.length;
     const status =

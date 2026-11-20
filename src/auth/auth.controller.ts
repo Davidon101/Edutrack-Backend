@@ -17,6 +17,7 @@ import {
   ApiResponse,
   ApiBearerAuth,
 } from '@nestjs/swagger';
+import { Throttle } from '@nestjs/throttler';
 import { AuthService } from './auth.service';
 import {
   RegisterSchoolDto,
@@ -53,6 +54,7 @@ export class AuthController {
    * @returns Tokens and registered school/admin profile.
    */
   @Public()
+  @Throttle({ default: { limit: 5, ttl: 60000 } })
   @Post('register')
   @ApiOperation({
     summary: 'Register a new school',
@@ -82,6 +84,7 @@ export class AuthController {
    * @returns Access and refresh tokens with user and school metadata.
    */
   @Public()
+  @Throttle({ default: { limit: 10, ttl: 60000 } })
   @Post('login')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
@@ -111,6 +114,7 @@ export class AuthController {
    * @returns Access and refresh tokens with teacher profile details.
    */
   @Public()
+  @Throttle({ default: { limit: 10, ttl: 60000 } })
   @Post('teacher/login')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
@@ -141,6 +145,7 @@ export class AuthController {
    * @returns Access and refresh tokens with student profile and assigned class.
    */
   @Public()
+  @Throttle({ default: { limit: 10, ttl: 60000 } })
   @Post('student/login')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
@@ -225,6 +230,7 @@ export class AuthController {
    * @returns Confirmation message (constant response to prevent account harvesting).
    */
   @Public()
+  @Throttle({ default: { limit: 5, ttl: 60000 } })
   @Post('forgot-password')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
@@ -250,6 +256,7 @@ export class AuthController {
    * @returns Confirmation message.
    */
   @Public()
+  @Throttle({ default: { limit: 5, ttl: 60000 } })
   @Post('reset-password')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({

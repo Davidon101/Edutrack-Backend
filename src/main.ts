@@ -27,6 +27,10 @@ import { RolesGuard } from './common/guards/roles.guard';
  */
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
+
+  // Behind Vercel / a reverse proxy, trust X-Forwarded-For so rate limiting sees the
+  // real client IP instead of the proxy's (otherwise all users share one limit).
+  app.getHttpAdapter().getInstance().set('trust proxy', 1);
   const config = app.get(ConfigService);
   const reflector = app.get(Reflector);
   const port = config.get<number>('port', 3000);
